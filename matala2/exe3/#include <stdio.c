@@ -6,16 +6,9 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 
 void process_mode4(int port, const char *program, int mode, const char *client_host, int client_port);
 void process_mode123(int port, const char *program, int mode);
-void run_program(const char *program);
-void printErrorAndExit(const char *message)
-{
-    perror(message);
-    exit(EXIT_FAILURE);
-}
 
 int main(int argc, char *argv[])
 {
@@ -67,7 +60,7 @@ int main(int argc, char *argv[])
             char *sep = strchr(argv[i] + 4, ',');
             if (sep)
             {
-                client_host = argv[i] + 4;
+                client_host = argv[i] + 5;
                 *sep = '\0';
                 client_port = sep + 1;
             }
@@ -177,11 +170,21 @@ void process_mode123(int port, const char *program, int mode)
     }
 
     // Split the program string into program name and arguments
-    run_program(program);
-    printf("going to close sockets\n");
+    char *args[10];
+    int i = 0;
+    char *token = strtok(strdup(program), " ");
+    while (token != NULL && i < 9)
+    {
+        args[i++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[i] = NULL;
+
+    execvp(args[0], args);
+
+    perror("execvp");
     close(new_socket);
     close(server_fd);
-    printf("done closing sockets\n");
 }
 
 void process_mode4(int port, const char *program, int mode, const char *client_host, int client_port)
@@ -247,12 +250,10 @@ void process_mode4(int port, const char *program, int mode, const char *client_h
     client_serv_addr.sin_port = htons(client_port);
     if (strcmp(client_host, "localhost") == 0)
     {
-        printf("client host is localhost\n");
         client_serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     }
     else
     {
-        printf("client host is NOT localhost\n");
         if (inet_pton(AF_INET, client_host, &client_serv_addr.sin_addr) <= 0)
         {
             printf("\nInvalid address/ Address not supported \n");
@@ -315,15 +316,6 @@ void process_mode4(int port, const char *program, int mode, const char *client_h
     // }
 
     // Split the program string into program name and arguments
-    run_program(program);
-    printf("going to close sockets\n");
-    close(new_socket);
-    close(client_socket);
-    close(server_fd);
-    printf("done closing sockets\n");
-}
-void run_program(const char *program)
-{
     char *args[10];
     int i = 0;
     char *token = strtok(strdup(program), " ");
@@ -331,37 +323,13 @@ void run_program(const char *program)
     {
         args[i++] = token;
         token = strtok(NULL, " ");
-    }
-    args[i] = NULL;
 
-    // execvp(args[0], args);
+        args[i] = NULL;
 
-    // perror("execvp");
-    pid_t pid = fork(); // יוצרים תהליך ילד
-    if (pid == -1)
-    {
-        // קריאה ל-fork נכשלה
-        printErrorAndExit("fork");
+        execvp(args[0], args);
+
+        perror("execvp");
+        close(new_socket);
+        close(client_socket);
+        close(server_fd);
     }
-    else if (pid == 0)
-    {
-        printf("in child process, going to execute command\n");
-        // זהו הקוד שמתבצע בתהליך הילד
-        if (execvp(args[0], args) == -1)
-        {
-            printf("in child process, execvp returned -1\n");
-            printErrorAndExit("execvp");
-        }
-        printf("in child process, done executing\n");
-    }
-    else
-    {
-        printf("in parent process, waiting for child to end\n");
-        // זהו הקוד שמתבצע בתהליך האב
-        if (wait(NULL) == -1)
-        {
-            printErrorAndExit("wait");
-        }
-        printf("in parent process, return from wait\n");
-    }
-}

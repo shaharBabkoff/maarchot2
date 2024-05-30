@@ -28,15 +28,20 @@ int main(int argc, char *argv[]) {
         // קריאה ל-fork נכשלה
         printErrorAndExit("fork");
     } else if (pid == 0) {
+        printf("in child process, going to execute command\n");
         // זהו הקוד שמתבצע בתהליך הילד
         if (execvp(args[0], args) == -1) {
+            printf("in child process, execvp returned -1\n");
             printErrorAndExit("execvp");
         }
+        printf("in child process, done executing\n");
     } else {
+        printf("in parent process, waiting for child to end\n");
         // זהו הקוד שמתבצע בתהליך האב
         if (wait(NULL) == -1) {
             printErrorAndExit("wait");
         }
+        printf("in parent process, return from wait\n");
     }
 
     return 0;
