@@ -6,23 +6,23 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <pthread.h>
 
-void start_server(int port, const char *client_host, int client_port, int mode);
-void start_basic_server(int port, int mode);
-void *relay_input(void *sockets);
-
-typedef struct {
-    int source;
-    int destination;
-} relay_sockets_t;
+void process_mode4(int port, const char *program, int mode, const char *client_host, int client_port);
+void process_mode123(int port, const char *program, int mode);
+void run_program(const char *program);
+void relay_input(int source, int destination);
+void printErrorAndExit(const char *message);
 
 int main(int argc, char *argv[]) {
     char *port = NULL;
     char *client_host = NULL;
     char *client_port = NULL;
+    char *program = NULL;
     int mode = 0; // 1 for input, 2 for output, 3 for both, 4 for input from client and output to server
 
+    printf("Starting program\n");
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-i") == 0) {
             if (mode == 2) {
@@ -38,6 +38,13 @@ int main(int argc, char *argv[]) {
             }
         } else if (strcmp(argv[i], "-b") == 0) {
             mode = 3;
+        } else if (strcmp(argv[i], "-e") == 0) {
+            if (i + 1 < argc) {
+                program = argv[++i];
+            } else {
+                fprintf(stderr, "Error: missing argument for -e\n");
+                exit(EXIT_FAILURE);
+            }
         } else if (strncmp(argv[i], "TCPS", 4) == 0) {
             port = argv[i] + 4;
         } else if (strncmp(argv[i], "TCPC", 4) == 0) {
@@ -57,9 +64,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (client_host && client_port && port) {
-        start_server(atoi(port), client_host, atoi(client_port), mode);
+        process_mode4(atoi(port), program, mode, client_host, atoi(client_port));
     } else if (port) {
-        start_basic_server(atoi(port), mode);
+        process_mode123(atoi(port), program, mode);
     } else {
         fprintf(stderr, "Error: missing TCP specification\n");
         exit(EXIT_FAILURE);
@@ -68,7 +75,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void start_basic_server(int port, int mode) {
+void process_mode123(int port, const char *program, int mode) {
     int server_fd, new_socket;
     struct sockaddr_in address;
     int opt = 1;
@@ -104,7 +111,7 @@ void start_basic_server(int port, int mode) {
 
     printf("Server listening on port %d\n", port);
 
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+    if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
         perror("accept");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -112,33 +119,36 @@ void start_basic_server(int port, int mode) {
 
     printf("Client connected\n");
 
-    if (mode == 3) {
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, relay_input, (void *)&new_socket);
+    // Use a switch statement to handle the mode and set up dup2 accordingly
+    switch (mode) { // 1 for input, 2 for output, 3 for both, 4 for input from client and output to server
+    case 1:
+        dup2(new_socket, STDIN_FILENO);
+        break;
+    case 2:
+        dup2(new_socket, STDOUT_FILENO);
+        break;
+    case 3:
+        dup2(new_socket, STDIN_FILENO);
+        dup2(new_socket, STDOUT_FILENO);
+        break;
+    default:
+        fprintf(stderr, "Error: invalid mode\n");
+        close(new_socket);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
 
-        char buffer[1024];
-        int bytes_read;
-        while ((bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer))) > 0) {
-            write(new_socket, buffer, bytes_read);
-        }
-
-        pthread_join(thread_id, NULL);
-    } else if (mode == 1) {
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, relay_input, (void *)&new_socket);
-        pthread_join(thread_id, NULL);
-    } else if (mode == 2) {
-        relay_sockets_t sockets = { STDIN_FILENO, new_socket };
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, relay_input, (void *)&sockets);
-        pthread_join(thread_id, NULL);
+    if (program) {
+        run_program(program);
+    } else {
+        relay_input(new_socket, new_socket);
     }
 
     close(new_socket);
     close(server_fd);
 }
 
-void start_server(int port, const char *client_host, int client_port, int mode) {
+void process_mode4(int port, const char *program, int mode, const char *client_host, int client_port) {
     int server_fd, new_socket, client_socket;
     struct sockaddr_in server_address, client_serv_addr;
     int opt = 1;
@@ -174,7 +184,7 @@ void start_server(int port, const char *client_host, int client_port, int mode) 
 
     printf("Server listening on port %d\n", port);
 
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&server_address, (socklen_t*)&addrlen)) < 0) {
+    if ((new_socket = accept(server_fd, (struct sockaddr *)&server_address, (socklen_t *)&addrlen)) < 0) {
         perror("accept");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -218,24 +228,20 @@ void start_server(int port, const char *client_host, int client_port, int mode) 
     printf("Connected to client server at %s:%d\n", client_host, client_port);
 
     if (mode == 4) {
-        relay_sockets_t sockets1 = { new_socket, client_socket };
-        pthread_t thread_id1;
-        pthread_create(&thread_id1, NULL, relay_input, (void *)&sockets1);
-        pthread_join(thread_id1, NULL);
-    } else if (mode == 1) {
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, relay_input, (void *)&new_socket);
-        pthread_join(thread_id, NULL);
-    } else if (mode == 2) {
-        relay_sockets_t sockets = { STDIN_FILENO, client_socket };
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, relay_input, (void *)&sockets);
-        pthread_join(thread_id, NULL);
-    } else if (mode == 3) {
-        relay_sockets_t sockets1 = { new_socket, client_socket };
-        pthread_t thread_id1;
-        pthread_create(&thread_id1, NULL, relay_input, (void *)&sockets1);
-        pthread_join(thread_id1, NULL);
+        dup2(new_socket, STDIN_FILENO);     // Input from client
+        dup2(client_socket, STDOUT_FILENO); // Output to server
+    } else {
+        fprintf(stderr, "Error: invalid mode\n");
+        close(new_socket);
+        close(client_socket);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    if (program) {
+        run_program(program);
+    } else {
+        relay_input(new_socket, client_socket);
     }
 
     close(new_socket);
@@ -243,14 +249,43 @@ void start_server(int port, const char *client_host, int client_port, int mode) 
     close(server_fd);
 }
 
-void *relay_input(void *sockets) {
-    relay_sockets_t *socks = (relay_sockets_t *)sockets;
+void run_program(const char *program) {
+    char *args[10];
+    int i = 0;
+    char *token = strtok(strdup(program), " ");
+    while (token != NULL && i < 9) {
+        args[i++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[i] = NULL;
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        printErrorAndExit("fork");
+    } else if (pid == 0) {
+        printf("In child process, going to execute command\n");
+        if (execvp(args[0], args) == -1) {
+            printf("In child process, execvp returned -1\n");
+            printErrorAndExit("execvp");
+        }
+    } else {
+        printf("In parent process, waiting for child to end\n");
+        if (wait(NULL) == -1) {
+            printErrorAndExit("wait");
+        }
+        printf("In parent process, return from wait\n");
+    }
+}
+
+void relay_input(int source, int destination) {
     char buffer[1024];
     int bytes_read;
-
-    while ((bytes_read = read(socks->source, buffer, sizeof(buffer))) > 0) {
-        write(socks->destination, buffer, bytes_read);
+    while ((bytes_read = read(source, buffer, sizeof(buffer))) > 0) {
+        write(destination, buffer, bytes_read);
     }
+}
 
-    return NULL;
+void printErrorAndExit(const char *message) {
+    perror(message);
+    exit(EXIT_FAILURE);
 }
